@@ -1,3 +1,3 @@
 from setuptools import setup
 
-setup(name="example_dataset", packages=["example_dataset"])
+setup(name="bridge_dataset", packages=["bridge_dataset"])
