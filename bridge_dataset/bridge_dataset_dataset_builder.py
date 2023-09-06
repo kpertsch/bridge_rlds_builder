@@ -14,7 +14,7 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
     # creating one shared model outside this function would cause a deadlock
     _embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder-large/5")
 
-    def _parse_example(episode_path):
+    def _parse_examples(episode_path):
         # load raw data --> this should change for your dataset
         data = np.load(episode_path, allow_pickle=True)  # this is a list of dicts in our case
 
@@ -22,23 +22,27 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
             # assemble episode --> here we're assuming demos so we set reward to 1 at the end
             episode = []
 
-            instruction = example['language']
-            language_embedding = _embed([instruction])[0].numpy()
+            instruction = example['language'][0]
+            if instruction:
+                language_embedding = _embed([instruction])[0].numpy()
+            else:
+                language_embedding = np.zeros(512, dtype=np.float32)
 
             for i in range(len(example['observations'])):
                 observation = {
-                    'state': example['observations'][i]['state'],
+                    'state': example['observations'][i]['state'].astype(np.float32),
                 }
                 for image_idx in range(4):
-                    key = f'image{image_idx}'
-                    if key in example['observations'][i]:
-                        observation[key] = example['observations'][i][key]
+                    orig_key = f'images{image_idx}'
+                    new_key = f'image_{image_idx}'
+                    if orig_key in example['observations'][i]:
+                        observation[new_key] = example['observations'][i][orig_key]
                     else:
-                        observation[key] = np.zeros_like(example['observations'][i]['image0'])
+                        observation[new_key] = np.zeros_like(example['observations'][i]['images0'])
 
                 episode.append({
                     'observation': observation,
-                    'action': example['actions'][i],
+                    'action': example['actions'][i].astype(np.float32),
                     'discount': 1.0,
                     'reward': float(i == (len(example['observations']) - 1)),
                     'is_first': i == 0,
@@ -59,12 +63,13 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
 
             # mark dummy values
             for image_idx in range(4):
-                key = f'image{image_idx}'
-                sample['episode_metadata']['has_{key}'] = key in example['observations']
+                orig_key = f'images{image_idx}'
+                new_key = f'image_{image_idx}'
+                sample['episode_metadata'][f'has_{new_key}'] = orig_key in example['observations']
             sample['episode_metadata']['has_language'] = bool(instruction)
 
             # if you want to skip an example for whatever reason, simply return None
-            yield episode_path, sample
+            yield episode_path + str(k), sample
 
     # for smallish datasets, use single-thread parsing
     for sample in paths:
@@ -72,15 +77,15 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
             yield id, sample
 
 
-class ExampleDataset(MultiThreadedDatasetBuilder):
+class BridgeDataset(MultiThreadedDatasetBuilder):
     """DatasetBuilder for example dataset."""
 
     VERSION = tfds.core.Version('1.0.0')
     RELEASE_NOTES = {
       '1.0.0': 'Initial release.',
     }
-    N_WORKERS = 10             # number of parallel workers for data conversion
-    MAX_PATHS_IN_MEMORY = 100  # number of paths converted & stored in memory before writing to disk
+    N_WORKERS = 40             # number of parallel workers for data conversion
+    MAX_PATHS_IN_MEMORY = 80   # number of paths converted & stored in memory before writing to disk
                                # -> the higher the faster / more parallel conversion, adjust based on avilable RAM
                                # note that one path may yield multiple episodes and adjust accordingly
     PARSE_FCN = _generate_examples      # handle to parse function from file paths to RLDS episodes
@@ -166,19 +171,19 @@ class ExampleDataset(MultiThreadedDatasetBuilder):
                         dtype=np.int32,
                         doc='ID of episode in file_path.'
                     ),
-                    'has_image0': tfds.features.Scalar(
+                    'has_image_0': tfds.features.Scalar(
                         dtype=np.bool_,
                         doc='True if image0 exists in observation, otherwise dummy value.'
                     ),
-                    'has_image1': tfds.features.Scalar(
+                    'has_image_1': tfds.features.Scalar(
                         dtype=np.bool_,
                         doc='True if image1 exists in observation, otherwise dummy value.'
                     ),
-                    'has_image2': tfds.features.Scalar(
+                    'has_image_2': tfds.features.Scalar(
                         dtype=np.bool_,
                         doc='True if image2 exists in observation, otherwise dummy value.'
                     ),
-                    'has_image3': tfds.features.Scalar(
+                    'has_image_3': tfds.features.Scalar(
                         dtype=np.bool_,
                         doc='True if image3 exists in observation, otherwise dummy value.'
                     ),
@@ -191,15 +196,18 @@ class ExampleDataset(MultiThreadedDatasetBuilder):
 
     def _split_paths(self):
         """Define filepaths for data splits."""
-        base_path = "/nfs/kun2/users/homer/datasets/bridge_data_all/numpy_256"
+        base_paths = ["/nfs/kun2/users/homer/datasets/bridge_data_all/numpy_256",
+                      "/nfs/kun2/users/homer/datasets/bridge_data_all/scripted_numpy_256"]
         train_filenames, val_filenames = [], []
-        for filename in glob.glob(f'{base_path}/**/*.npy', recursive=True):
+        for path in base_paths:
+          for filename in glob.glob(f'{path}/**/*.npy', recursive=True):
             if '/train/out.npy' in filename:
                 train_filenames.append(filename)
             elif '/val/out.npy' in filename:
                 val_filenames.append(filename)
             else:
                 raise ValueError(filename)
+        print(f"Converting {len(train_filenames)} training and {len(val_filenames)} validation files.")
         return {
             'train': train_filenames,
             'val': val_filenames,
