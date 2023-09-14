@@ -26,7 +26,7 @@ Before modifying the code to convert your own dataset, run the provided example 
 everything is installed correctly. Run the following lines to create some dummy data and convert it to RLDS.
 ```
 pip3 install -e .
-cd example_dataset
+cd bridge_dataset
 python3 create_example_data.py
 tfds build
 ```
