@@ -317,7 +317,7 @@ class BridgeDataset(MultiThreadedDatasetBuilder):
         """Define filepaths for data splits."""
 
         # each path is a directory that contains dated directories
-        paths = glob.glob(os.path.join(INPUT_PATH, *("*" * (DEPTH - 1))))[:2]
+        paths = glob.glob(os.path.join(INPUT_PATH, *("*" * (DEPTH - 1))))
 
         train_filenames, val_filenames = [], []
 

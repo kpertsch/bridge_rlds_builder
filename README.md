@@ -1,4 +1,4 @@
-# BridgeData RLDS Dataset Conversion
+# BridgeData RLDS Conversion
 
 This repo converts data in the raw BridgeData format (i.e data saved by [bridge_data_robot](https://github.com/rail-berkeley/bridge_data_robot)) into RLDS format for [OXE](https://robotics-transformer-x.github.io/) integration.
 
