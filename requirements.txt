@@ -1,0 +1,6 @@
+tensorflow==2.15.0
+tensorflow-datasets==4.9.4
+tensorflow-hub==0.15.0
+matplotlib==3.8.2
+plotly==5.18.0
+wandb==0.16.1
