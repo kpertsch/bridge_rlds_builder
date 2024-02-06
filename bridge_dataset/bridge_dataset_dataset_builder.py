@@ -14,7 +14,7 @@ from bridge_dataset.conversion_utils import MultiThreadedDatasetBuilder
 
 # we ignore the small amount of data that contains >4 views
 N_VIEWS = 4
-IMAGE_SIZE = (640, 480)
+IMAGE_SIZE = (480, 640)
 INPUT_PATH = "/nfs/kun2/users/homer/datasets/bridge_data_all/raw"
 DEPTH = 5
 TRAIN_PROPORTION = 0.9
@@ -23,7 +23,7 @@ TRAIN_PROPORTION = 0.9
 def read_resize_image(path: str, size: Tuple[int, int]) -> np.array:
     """Reads, decodes, resizes an image."""
     data = tf.io.read_file(path)
-    image = tf.image.decode_jpeg(data)
+    image = tf.image.decode_image(data)
     image = tf.image.resize(image, size, method="lanczos3", antialias=True)
     image = tf.cast(tf.clip_by_value(tf.round(image), 0, 255), tf.uint8)
     return image.numpy()
@@ -61,6 +61,17 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
 
             return d
 
+        def process_depth(path):
+            depth_path = os.path.join(path, "depth_images0")
+            if os.path.exists(depth_path):
+                image_paths = sorted(
+                    glob.glob(os.path.join(depth_path, "im_*.png")),
+                    key=lambda x: int(x.split("_")[-1].split(".")[0]),
+                )
+                return [read_resize_image(path, IMAGE_SIZE) for path in image_paths]
+            else:
+                return None
+
         def process_state(path):
             fp = os.path.join(path, "obs_dict.pkl")
             with open(fp, "rb") as f:
@@ -87,6 +98,7 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
         out = dict()
 
         out["images"] = process_images(episode_path)
+        out["depth"] = process_depth(episode_path)
         out["state"] = process_state(episode_path)
         out["actions"] = process_actions(episode_path)
         out["lang"] = process_lang(episode_path)
@@ -100,6 +112,8 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
             out["images"] = {k: v[1:] for k, v in out["images"].items()}
             out["state"] = out["state"][1:]
             out["actions"] = out["actions"][:-1]
+            if out["depth"] is not None:
+                out["depth"] = out["depth"][1:]
 
         # append a null action to the end
         out["actions"].append(np.zeros_like(out["actions"][0]))
@@ -120,23 +134,31 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
                 "/camera0/color/image_raw",
                 "/D435/color/image_raw",
             ]:
+                # fixed cam should always be image_0
                 new_key = "image_0"
+                assert new_key[-1] == orig_key[-1], episode_path
+            elif camera_topics[image_idx] == "/wrist/image_raw":
+                # wrist cam should always be image_3
+                new_key = "image_3"
             elif camera_topics[image_idx] in [
                 "/cam1/image_raw",
+                "/cam2/image_raw",
+                "/cam3/image_raw",
+                "/cam4/image_raw",
                 "/camera1/color/image_raw",
+                "/camera3/color/image_raw",
+                "/camera2/color/image_raw",
+                "/camera4/color/image_raw",
+                "/blue/image_raw",
                 "/yellow/image_raw",
             ]:
-                new_key = "image_1"
-            elif camera_topics[image_idx] in [
-                "/cam2/image_raw",
-                "/camera2/color/image_raw",
-                "/blue/image_raw",
-            ]:
-                new_key = "image_2"
-            elif camera_topics[image_idx] == "/wrist/image_raw":
-                new_key = "image_3"
+                # other cams can be either image_1 or image_2
+                if "image_1" in list(orig_to_new.values()):
+                    new_key = "image_2"
+                else:
+                    new_key = "image_1"
             else:
-                raise ValueError("Unexpected camera topic")
+                raise ValueError(f"Unexpected camera topic {camera_topics[image_idx]}")
 
             orig_to_new[orig_key] = new_key
             episode_metadata[f"has_{new_key}"] = True
@@ -145,6 +167,8 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
         missing_keys = set(new_names) - set(orig_to_new.values())
         for missing in missing_keys:
             episode_metadata[f"has_{missing}"] = False
+
+        episode_metadata["has_depth_0"] = out["depth"] is not None
 
         instruction = out["lang"]
         if instruction:
@@ -162,6 +186,10 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
                 observation[new_key] = out["images"][orig_key][i]
             for missing in missing_keys:
                 observation[missing] = np.zeros_like(out["images"]["images0"][i])
+            if episode_metadata["has_depth_0"]:
+                observation["depth_0"] = out["depth"][i]
+            else:
+                observation["depth_0"] = np.zeros(IMAGE_SIZE + (1,), dtype=np.uint8)
 
             episode.append(
                 {
@@ -241,6 +269,12 @@ class BridgeDataset(MultiThreadedDatasetBuilder):
                                         encoding_format="jpeg",
                                         doc="Wrist camera RGB observation.",
                                     ),
+                                    "depth_0": tfds.features.Image(
+                                        shape=IMAGE_SIZE + (1,),
+                                        dtype=np.uint8,
+                                        encoding_format="jpeg",
+                                        doc="Main camera depth observation (fixed position).",
+                                    ),
                                     "state": tfds.features.Tensor(
                                         shape=(7,),
                                         dtype=np.float32,
@@ -303,6 +337,10 @@ class BridgeDataset(MultiThreadedDatasetBuilder):
                                 dtype=np.bool_,
                                 doc="True if image3 exists in observation, otherwise dummy value.",
                             ),
+                            "has_depth_0": tfds.features.Scalar(
+                                dtype=np.bool_,
+                                doc="True if depth0 exists in observation, otherwise dummy value.",
+                            ),
                             "has_language": tfds.features.Scalar(
                                 dtype=np.bool_,
                                 doc="True if language exists in observation, otherwise empty string.",
@@ -336,9 +374,18 @@ class BridgeDataset(MultiThreadedDatasetBuilder):
                     continue
 
                 config_path = os.path.join(path, dated_folder, "config.json")
-                with open(config_path, "rb") as f:
-                    config = json.load(f)
-                camera_topics = config["agent"]["env"][1]["camera_topics"]
+                if os.path.exists(config_path):
+                    with open(config_path, "rb") as f:
+                        config = json.load(f)
+                    camera_topics = config["agent"]["env"][1]["camera_topics"]
+                else:
+                    # assumed camera topics if no config.json exists
+                    camera_topics = [
+                        "/D435/color/image_raw",
+                        "/blue/image_raw",
+                        "/yellow/image_raw",
+                        "/wrist/image_raw",
+                    ]
                 all_traj = [(t, camera_topics) for t in all_traj]
 
                 random.shuffle(all_traj)
