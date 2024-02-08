@@ -1,5 +1,5 @@
 from typing import Iterator, Tuple, Any
-
+import traceback
 import glob
 import os
 import numpy as np
@@ -211,12 +211,14 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
         # create output data sample
         sample = {"steps": episode, "episode_metadata": episode_metadata}
 
-        # if you want to skip an example for whatever reason, simply return None
-        yield episode_path, sample
+        return episode_path, sample
 
     for path, camera_topics in paths:
-        for id, sample in _parse_examples(path, camera_topics):
-            yield id, sample
+        try:
+            yield _parse_examples(path, camera_topics)
+        except:
+            print(traceback.format_exc())
+            yield None
 
 
 class BridgeDataset(MultiThreadedDatasetBuilder):
@@ -226,9 +228,9 @@ class BridgeDataset(MultiThreadedDatasetBuilder):
     RELEASE_NOTES = {
         "1.0.0": "Initial release.",
     }
-    N_WORKERS = 40  # number of parallel workers for data conversion
+    N_WORKERS = 10  # number of parallel workers for data conversion
     MAX_PATHS_IN_MEMORY = (
-        80  # number of paths converted & stored in memory before writing to disk
+        1  # number of paths converted & stored in memory before writing to disk
     )
     # -> the higher the faster / more parallel conversion, adjust based on avilable RAM
     # note that one path may yield multiple episodes and adjust accordingly
